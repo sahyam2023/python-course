@@ -1,0 +1,7 @@
+Try and except block contains 4 keywords
+
+try: Execute the block of code that might cause exception
+except: If there is an exception, then execute this block of code
+else: If there is no exception, then execute this block of code
+finally: This block of code will always execute
+
