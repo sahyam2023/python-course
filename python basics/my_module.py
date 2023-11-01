@@ -1,0 +1,1 @@
+myModule = 'Hi this is my module'
