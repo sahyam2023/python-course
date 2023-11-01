@@ -1,5 +1,9 @@
-hours = int(input('Enter Hours\n'))
-rate = float(input('Enter Rate\n'))
+try:
+    hours = int(input('Enter Hours\n'))
+    rate = float(input('Enter Rate\n'))
+except ValueError:
+    print('enter only integer value and try again')
+    exit()
 if hours < 40:
     pay= round (hours *rate, 2)
 else:
