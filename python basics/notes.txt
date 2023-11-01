@@ -5,3 +5,10 @@ except: If there is an exception, then execute this block of code
 else: If there is no exception, then execute this block of code
 finally: This block of code will always execute
 
+parameter is the name of data
+argument is the actual data
+example:
+parameter (argument)
+
+
+"""
