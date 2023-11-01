@@ -42,7 +42,3 @@ else:
         print('Bad Score')
 finally:
     print('Thank you for using our score calulator')
-
-
-        
-        
