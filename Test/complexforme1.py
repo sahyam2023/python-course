@@ -16,3 +16,15 @@
 # Enter a number: 6
 # Enter a number: done
 # 12.0 3 4.0
+
+def sum_average_count():
+    var = ''
+    try:
+        while var != 'done':
+            var= int(input("Enter a number \n"))
+        print('Bye')
+    except ValueError:
+        print('value error')
+
+(sum_average_count())
+                 
