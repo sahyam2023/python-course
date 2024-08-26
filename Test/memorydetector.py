@@ -9,7 +9,8 @@ from tkinter import Tk, Label, Button
 # Configuration
 process_name = "analytic_server.exe"
 log_file = "process_metrics_log.txt"
-interval = 60  # Interval in seconds
+interval = 60  # Interval in seconds for metrics check
+popup_interval = timedelta(minutes=30)  # Interval for popup update
 handle_threshold = 2000  # Adjusted threshold for handles
 thread_threshold = 1000  # Adjusted threshold for threads
 history_length = 10  # Number of data points to keep for detecting memory leak
@@ -28,39 +29,22 @@ thread_count_histories = {}
 last_graph_time = datetime.now()
 hourly_interval = timedelta(hours=1)
 
-# Track the active popups for RAM, handle, and thread anomalies
-active_popups = {
-    "RAM": None,
-    "Handle": None,
-    "Thread": None
-}
+# Popup tracking
+last_popup_time = datetime.min
+popup_messages = {}
 
-def close_popup(popup_type):
-    """Close the existing popup if it's active."""
-    if active_popups[popup_type] is not None:
-        active_popups[popup_type].destroy()
-        active_popups[popup_type] = None
-
-def show_popup(message, popup_type):
-    """Display a popup with a message, including the time it occurred, and replace any existing popup of the same type."""
-    close_popup(popup_type)  # Close existing popup of the same type
-    
-    # Get the current time
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Combine the message with the timestamp
-    full_message = f"{message}\nTime: {current_time}"
-    
+# Tkinter Popup Window
+def show_popup(message):
+    """Display a popup with a message."""
     root = Tk()
     root.title("Process Monitoring Alert")
     
-    label = Label(root, text=full_message, padx=20, pady=20)
+    label = Label(root, text=message, padx=20, pady=20)
     label.pack()
     
     button = Button(root, text="OK", command=root.destroy, padx=10, pady=5)
     button.pack(pady=10)
     
-    active_popups[popup_type] = root  # Store reference to the active popup
     root.mainloop()
 
 def get_process_metrics(process_name):
@@ -167,31 +151,34 @@ def plot_graphs():
 open(log_file, 'w').close()
 
 # Show a popup at the start to indicate that monitoring has begun
-show_popup("Process monitoring has started. The script will run in the background and alert if anomalies are detected.", "Info")
+show_popup("Process monitoring has started. The script will run in the background and alert if anomalies are detected.")
 
 # Monitor the process in an infinite loop
 while True:
     metrics_reports = get_process_metrics(process_name)
 
+    current_time = datetime.now()
     for metrics, anomaly_report, pid in metrics_reports:
         if detect_memory_leak(memory_usage_histories[pid]):
+            if (current_time - last_popup_time) >= popup_interval:
+                popup_message = f"Potential memory leak detected for PID {pid}! Check the logs for details."
+                show_popup(f"{popup_message}\nOccurred at: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                last_popup_time = current_time
             logging.warning(f"Potential memory leak detected for PID {pid}: Memory usage shows a continuous increase.")
-            show_popup(f"Potential memory leak detected for PID {pid}! Check the logs for details.", "RAM")
             plot_graphs()
 
         if anomaly_report:
+            if (current_time - last_popup_time) >= popup_interval:
+                popup_message = f"Anomaly detected for PID {pid}! Check the logs for details."
+                show_popup(f"{popup_message}\nOccurred at: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                last_popup_time = current_time
             logging.warning(f"Anomaly detected for PID {pid}: {anomaly_report}")
-            if "High handle count" in anomaly_report:
-                show_popup(f"High Handle Count detected for PID {pid}! Check the logs for details.", "Handle")
-            if "High thread count" in anomaly_report:
-                show_popup(f"High Thread Count detected for PID {pid}! Check the logs for details.", "Thread")
             plot_graphs()
 
         # Update real-time monitoring in console
         print(metrics)
 
     # Plot and save graphs every hour
-    current_time = datetime.now()
     if current_time - last_graph_time >= hourly_interval:
         plot_graphs()
         last_graph_time = current_time
