@@ -13,7 +13,6 @@ interval = 60  # Interval in seconds
 handle_threshold = 2000  # Adjusted threshold for handles
 thread_threshold = 1000  # Adjusted threshold for threads
 history_length = 10  # Number of data points to keep for detecting memory leak
-memory_leak_threshold_mb = 6000  # Threshold for high memory usage (in MB)
 increase_threshold = 0.15  # Threshold for detecting a steady increase (15%)
 
 # Set up logging
@@ -94,13 +93,14 @@ def detect_memory_leak(memory_history):
     if len(memory_history) < history_length:
         return False  # Not enough data points yet
 
-    # Look for a steady increase over the last history_length intervals
-    increasing_trend = all(x < y for x, y in zip(memory_history, memory_history[1:]))
+    # Calculate average memory usage
+    avg_memory_usage = sum(memory_history) / len(memory_history)
+    latest_memory_usage = memory_history[-1]
+
+    # Calculate percentage increase
+    percent_increase = (latest_memory_usage - avg_memory_usage) / avg_memory_usage
     
-    # Calculate the percentage increase
-    percent_increase = (memory_history[-1] - memory_history[0]) / memory_history[0]
-    
-    return increasing_trend and percent_increase > increase_threshold
+    return percent_increase > increase_threshold
 
 def plot_graphs():
     """Generate and save graphs for each process being monitored."""
@@ -145,8 +145,6 @@ def plot_graphs():
 # Create or clear the log file
 open(log_file, 'w').close()
 
-last_memory_usage_mb = {}
-
 # Show a popup at the start to indicate that monitoring has begun
 show_popup("Process monitoring has started. The script will run in the background and alert if anomalies are detected.")
 
@@ -164,8 +162,6 @@ while True:
             logging.warning(f"Anomaly detected for PID {pid}: {anomaly_report}")
             show_popup(f"Anomaly detected for PID {pid}! Check the logs for details.")
             plot_graphs()
-
-        last_memory_usage_mb[pid] = memory_usage_histories[pid][-1]
 
         # Update real-time monitoring in console
         print(metrics)
