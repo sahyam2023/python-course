@@ -28,18 +28,39 @@ thread_count_histories = {}
 last_graph_time = datetime.now()
 hourly_interval = timedelta(hours=1)
 
-# Tkinter Popup Window
-def show_popup(message):
-    """Display a popup with a message."""
+# Track the active popups for RAM, handle, and thread anomalies
+active_popups = {
+    "RAM": None,
+    "Handle": None,
+    "Thread": None
+}
+
+def close_popup(popup_type):
+    """Close the existing popup if it's active."""
+    if active_popups[popup_type] is not None:
+        active_popups[popup_type].destroy()
+        active_popups[popup_type] = None
+
+def show_popup(message, popup_type):
+    """Display a popup with a message, including the time it occurred, and replace any existing popup of the same type."""
+    close_popup(popup_type)  # Close existing popup of the same type
+    
+    # Get the current time
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Combine the message with the timestamp
+    full_message = f"{message}\nTime: {current_time}"
+    
     root = Tk()
     root.title("Process Monitoring Alert")
     
-    label = Label(root, text=message, padx=20, pady=20)
+    label = Label(root, text=full_message, padx=20, pady=20)
     label.pack()
     
     button = Button(root, text="OK", command=root.destroy, padx=10, pady=5)
     button.pack(pady=10)
     
+    active_popups[popup_type] = root  # Store reference to the active popup
     root.mainloop()
 
 def get_process_metrics(process_name):
@@ -146,7 +167,7 @@ def plot_graphs():
 open(log_file, 'w').close()
 
 # Show a popup at the start to indicate that monitoring has begun
-show_popup("Process monitoring has started. The script will run in the background and alert if anomalies are detected.")
+show_popup("Process monitoring has started. The script will run in the background and alert if anomalies are detected.", "Info")
 
 # Monitor the process in an infinite loop
 while True:
@@ -155,12 +176,15 @@ while True:
     for metrics, anomaly_report, pid in metrics_reports:
         if detect_memory_leak(memory_usage_histories[pid]):
             logging.warning(f"Potential memory leak detected for PID {pid}: Memory usage shows a continuous increase.")
-            show_popup(f"Potential memory leak detected for PID {pid}! Check the logs for details.")
+            show_popup(f"Potential memory leak detected for PID {pid}! Check the logs for details.", "RAM")
             plot_graphs()
 
         if anomaly_report:
             logging.warning(f"Anomaly detected for PID {pid}: {anomaly_report}")
-            show_popup(f"Anomaly detected for PID {pid}! Check the logs for details.")
+            if "High handle count" in anomaly_report:
+                show_popup(f"High Handle Count detected for PID {pid}! Check the logs for details.", "Handle")
+            if "High thread count" in anomaly_report:
+                show_popup(f"High Thread Count detected for PID {pid}! Check the logs for details.", "Thread")
             plot_graphs()
 
         # Update real-time monitoring in console
