@@ -12,8 +12,9 @@ log_file = "process_metrics_log.txt"
 interval = 60  # Interval in seconds
 handle_threshold = 2000  # Adjusted threshold for handles
 thread_threshold = 1000  # Adjusted threshold for threads
-memory_leak_threshold_mb = 6000  # Adjusted threshold for memory leak detection (in MB)
-history_length = 100  # Number of data points to keep for graphs
+history_length = 10  # Number of data points to keep for detecting memory leak
+memory_leak_threshold_mb = 6000  # Threshold for high memory usage (in MB)
+increase_threshold = 0.15  # Threshold for detecting a steady increase (15%)
 
 # Set up logging
 logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -78,8 +79,6 @@ def get_process_metrics(process_name):
                     anomaly_report += f"High handle count detected for PID {pid}: {handle_count} handles (threshold: {handle_threshold}). "
                 if thread_count > thread_threshold:
                     anomaly_report += f"High thread count detected for PID {pid}: {thread_count} threads (threshold: {thread_threshold}). "
-                if memory_usage_mb > memory_leak_threshold_mb:
-                    anomaly_report += f"Potential memory leak detected for PID {pid}: {memory_usage_mb:.2f} MB (threshold: {memory_leak_threshold_mb} MB). "
 
                 # Log metrics
                 log_entry = (f"PID {pid} ({process_name}): CPU Usage: {cpu_usage:.2f}%, Memory Usage: {memory_usage_mb:.2f} MB, "
@@ -90,9 +89,18 @@ def get_process_metrics(process_name):
     
     return metrics_reports
 
-def detect_memory_leak(last_memory_usage_mb, current_memory_usage_mb):
-    """Detect if memory usage has significantly increased."""
-    return current_memory_usage_mb > last_memory_usage_mb * 1.1  # 10% increase as a simple heuristic
+def detect_memory_leak(memory_history):
+    """Detect if memory usage shows a pattern of continuous increase."""
+    if len(memory_history) < history_length:
+        return False  # Not enough data points yet
+
+    # Look for a steady increase over the last history_length intervals
+    increasing_trend = all(x < y for x, y in zip(memory_history, memory_history[1:]))
+    
+    # Calculate the percentage increase
+    percent_increase = (memory_history[-1] - memory_history[0]) / memory_history[0]
+    
+    return increasing_trend and percent_increase > increase_threshold
 
 def plot_graphs():
     """Generate and save graphs for each process being monitored."""
@@ -147,15 +155,15 @@ while True:
     metrics_reports = get_process_metrics(process_name)
 
     for metrics, anomaly_report, pid in metrics_reports:
+        if detect_memory_leak(memory_usage_histories[pid]):
+            logging.warning(f"Potential memory leak detected for PID {pid}: Memory usage shows a continuous increase.")
+            show_popup(f"Potential memory leak detected for PID {pid}! Check the logs for details.")
+            plot_graphs()
+
         if anomaly_report:
             logging.warning(f"Anomaly detected for PID {pid}: {anomaly_report}")
             show_popup(f"Anomaly detected for PID {pid}! Check the logs for details.")
-            plot_graphs()  # Optionally generate graph for anomalies
-
-        if pid in last_memory_usage_mb and detect_memory_leak(last_memory_usage_mb[pid], memory_usage_histories[pid][-1]):
-            logging.warning(f"Memory leak detected for PID {pid}: Memory usage increased from {last_memory_usage_mb[pid]:.2f} MB to {memory_usage_histories[pid][-1]:.2f} MB")
-            show_popup(f"Memory leak detected for PID {pid}! Check the logs for details.")
-            plot_graphs()  # Generate graph for detected memory leak
+            plot_graphs()
 
         last_memory_usage_mb[pid] = memory_usage_histories[pid][-1]
 
