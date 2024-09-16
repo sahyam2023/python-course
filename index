@@ -1,0 +1,624 @@
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, Response
+from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
+from datetime import datetime
+from flask_cors import CORS
+from sqlalchemy import inspect
+import csv
+from io import StringIO
+import pandas as pd
+from io import BytesIO
+from flask import send_file
+from waitress import serve  # Import Waitress
+import sys
+import os
+
+app = Flask(__name__)
+CORS(app)  # Allow cross-origin requests
+CORS(app, resources={r"/add_license": {"origins": "http://localhost:8888"}})
+app.secret_key = 'e51088848afe08827631ae1974b8cbd2'  # Add a secret key for sessions
+
+if getattr(sys, 'frozen', False):  # If the application is running as a PyInstaller bundle
+    basedir = os.path.dirname(sys.executable)
+else:
+    basedir = os.path.abspath(os.path.dirname(__file__))
+
+# Ensure the instance folder exists inside the installation directory
+db_instance_path = os.path.join(basedir, 'instance')
+if not os.path.exists(db_instance_path):
+    os.makedirs(db_instance_path)
+
+# Set the database path
+db_path = os.path.join(db_instance_path, 'licenses.db')
+
+# Update the SQLAlchemy config to use this dynamic path
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+
+class License(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    site_name = db.Column(db.String(100), nullable=False)
+    state_details = db.Column(db.String(100), nullable=False)
+    license_date = db.Column(db.Date, nullable=False)
+    product_type = db.Column(db.String(50), nullable=False)
+    license_type = db.Column(db.String(50), nullable=False)
+    license_details = db.Column(db.Text, nullable=True)
+    expiry_date = db.Column(db.Date, nullable=True)  # Make nullable for Permanent licenses
+    si_name = db.Column(db.String(100), nullable=True)
+    contact_person = db.Column(db.String(100), nullable=True)
+    status = db.Column(db.String(50), nullable=True)
+    implementation_handled_by = db.Column(db.String(100), nullable=True)
+    time_remaining = db.Column(db.String(50), nullable=True)
+    
+    def __repr__(self):
+        return f'<License {self.site_name}>'
+
+# Routes for general functionality
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/check_db')
+def check_db():
+    try:
+        if not os.path.exists(db_path):
+            return jsonify({"error": "Database file not found"}), 404
+
+        inspector = inspect(db.engine)
+        tables = inspector.get_table_names()
+        return jsonify({"tables": tables})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/check_db_loc')
+def check_db_loc():
+    try:
+        # Get the path of the database from SQLAlchemy config
+        db_path = app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', '')
+        
+        # Check if the file exists
+        if os.path.exists(db_path):
+            return jsonify({"db_location": db_path}), 200
+        else:
+            return jsonify({"error": "Database file not found at the expected location", "expected_location": db_path}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# Routes for managing licenses
+@app.route('/add_license', methods=['GET', 'POST'])
+def add_license_page():
+    if request.method == 'GET':
+        # Render the form for adding a new license
+        return render_template('add_license.html')
+    
+    elif request.method == 'POST':
+        try:
+            data = request.get_json()  # Expecting JSON data
+            if not data or 'licenses' not in data:
+                raise ValueError("No data or 'licenses' key provided")
+
+            licenses = data['licenses']
+            if not isinstance(licenses, list) or not licenses:
+                raise ValueError("'licenses' must be a non-empty list")
+
+            # Validate each license entry
+            for license in licenses:
+                required_fields = ['site_name', 'state_details', 'license_date', 'product_type', 'license_type']
+                for field in required_fields:
+                    if not license.get(field):
+                        return jsonify({'error': f'Missing field: {field}'}), 400
+
+                # Validate license details
+                license_details = license.get('license_details')
+                if license_details and not license_details.replace(" ", "").isalnum():
+                    return jsonify({'error': 'License details must be alphanumeric.'}), 400
+
+                # Validate contact person (mobile number)
+                contact_person = license.get('contact_person')
+                if contact_person:
+                    # Remove "+91" if present
+                    if contact_person.startswith('+91'):
+                        contact_person = contact_person[3:] 
+                    if not contact_person.isdigit() or len(contact_person) != 10:
+                        return jsonify({'error': 'Invalid mobile number format. Please enter 10 digits.'}), 400
+                    license['contact_person'] = '+91' + contact_person # Add +91 back
+
+                # Validate license date and expiry date
+                license_date = datetime.strptime(license.get('license_date'), '%Y-%m-%d')
+                expiry_date = None
+                if license.get('license_type') != 'Permanent':
+                    expiry_date = license.get('expiry_date')
+                    if not expiry_date:
+                        return jsonify({'error': 'Expiry date is required for non-permanent licenses.'}), 400
+                    expiry_date = datetime.strptime(expiry_date, '%Y-%m-%d')
+                    if license_date >= expiry_date:
+                        return jsonify({'error': 'License date must be before the expiry date.'}), 400
+
+                # Create new license entry
+                new_license = License(
+                    site_name=license.get('site_name'),
+                    state_details=license.get('state_details'),
+                    license_date=license_date,
+                    product_type=license.get('product_type'),
+                    license_type=license.get('license_type'),
+                    license_details=license_details,
+                    expiry_date=expiry_date,
+                    si_name=license.get('si_name'),
+                    contact_person=license.get('contact_person'),
+                    status=license.get('status'),
+                    implementation_handled_by=license.get('implementation_handled_by')
+                )
+                db.session.add(new_license)
+                db.session.commit()
+
+            return jsonify({'message': 'Licenses added successfully!'})
+
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400  # Handle validation errors
+        except Exception as e: 
+            return jsonify({'error': str(e)}), 500  # Handle other errors
+        
+@app.route('/search_license', methods=['POST'])
+def search_license():
+    data = request.get_json()
+    search_term = data.get('search_terms', None)
+
+    if search_term is None:
+        return jsonify([])  # Return empty list if no search term provided
+
+    query = License.query.filter(
+        db.or_(
+            License.site_name.ilike(f"%{search_term}%"),
+            License.product_type.ilike(f"%{search_term}%"),
+            License.status.ilike(f"%{search_term}%"),
+            License.license_type.ilike(f"%{search_term}%"),
+            License.contact_person.ilike(f"%{search_term}%"),
+            License.implementation_handled_by.ilike(f"%{search_term}%"),
+            License.state_details.ilike(f"%{search_term}%"),
+            License.license_details.ilike(f"%{search_term}%"),
+            License.si_name.ilike(f"%{search_term}%") 
+        )
+    )
+
+    results = query.all()
+    licenses = []
+    for license in results:
+        time_remaining_str = 'N/A'
+        if license.expiry_date:
+            time_remaining = license.expiry_date - datetime.now().date()
+            if time_remaining.days <= 0:
+                time_remaining_str = 'Expired'
+            else:
+                time_remaining_str = f"{time_remaining.days} days"
+
+        licenses.append({
+            'id': license.id,
+            'site_name': license.site_name,
+            'state_details': license.state_details,
+            'license_date': license.license_date.strftime('%Y-%m-%d'),
+            'product_type': license.product_type,
+            'license_type': license.license_type,
+            'license_details': license.license_details,
+            'expiry_date': license.expiry_date.strftime('%Y-%m-%d') if license.expiry_date else None,
+            'si_name': license.si_name,
+            'contact_person': license.contact_person,
+            'status': license.status,
+            'implementation_handled_by': license.implementation_handled_by,
+            'time_remaining': time_remaining_str
+        })
+
+    return jsonify(licenses) 
+@app.route('/view_details')
+def view_details():
+    try:
+        licenses = License.query.all()  # Fetch all licenses
+        for license in licenses:
+            if license.expiry_date:
+                time_remaining = license.expiry_date - datetime.now().date()
+                if time_remaining.days <= 0:
+                    license.time_remaining = 'Expired'
+                else:
+                    license.time_remaining = f"{time_remaining.days} days"
+            else:
+                license.time_remaining = 'N/A'
+        return render_template('view_details.html', licenses=licenses)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Routes for exporting data
+@app.route('/export_csv')
+def export_csv():
+    try:
+        licenses = License.query.all()
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['ID', 'Site Name', 'State Detail', 'License Date', 'Product Type', 'License Type', 'License Details', 'Expiry Date', 'SI Name', 'Contact Person', ' AMC Status', 'Implementation Handled By'])
+        
+        for license in licenses:
+            writer.writerow([
+                license.id,
+                license.site_name,
+                license.state_details or '',
+                license.license_date.strftime('%Y-%m-%d') if license.license_date else '',
+                license.product_type,
+                license.license_type,
+                license.license_details or '',
+                license.expiry_date.strftime('%Y-%m-%d') if license.expiry_date else '',
+                license.si_name or '',
+                license.contact_person or '',
+                license.status or '',
+                license.implementation_handled_by or ''
+            ])
+        
+        output.seek(0)
+        return Response(
+            output,
+            mimetype='text/csv',
+            headers={"Content-Disposition": "attachment;filename=licenses.csv"}
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/export_excel')
+def export_excel():
+    try:
+        # Fetch license data
+        licenses = License.query.all()
+        df = pd.DataFrame([{
+            'ID': license.id,
+            'Site Name': license.site_name,
+            'State Detail': license.state_details or '',
+            'License Date': license.license_date.strftime('%Y-%m-%d') if license.license_date else '',
+            'Product Type': license.product_type,
+            'License Type': license.license_type,
+            'License Details': license.license_details or '',
+            'Expiry Date': license.expiry_date.strftime('%Y-%m-%d') if license.expiry_date else '',
+            'SI Name': license.si_name or '',
+            'Contact Person': license.contact_person or '',
+            'AMC Status': license.status or '',
+            'Implementation Handled By': license.implementation_handled_by or ''
+        } for license in licenses])
+
+        # Create an in-memory output file
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='Licenses')
+        output.seek(0)
+        
+        # Return the Excel file as an attachment
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name='licenses.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+# Routes for login and authentication
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        if username == 'i2vsys' and password == 'i2vsys@123':
+            session['logged_in'] = True
+            return redirect(url_for('admin'))  # Update this line
+        else:
+            flash('Invalid credentials')
+            return redirect(url_for('login'))
+
+    return render_template('login.html')
+
+@app.route('/admin')
+def admin():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    return render_template('admin.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('index'))
+
+@app.route('/edit_license/<int:id>', methods=['GET', 'POST'])
+def edit_license(id):
+    license = License.query.get_or_404(id)
+    
+    if request.method == 'POST':
+        try:
+            data = request.form
+            license.site_name = data.get('site_name')
+            license.state_details = data.get('state_details')
+            license.license_date = datetime.strptime(data.get('license_date'), '%Y-%m-%d')
+            license.product_type = data.get('product_type')
+            license.license_type = data.get('license_type')
+            license.license_details = data.get('license_details')
+            if license.license_type != 'Permanent':
+                license.expiry_date = datetime.strptime(data.get('expiry_date'), '%Y-%m-%d')
+            else:
+                license.expiry_date = None
+            license.si_name = data.get('si_name')
+            license.contact_person = data.get('contact_person')
+            license.status = data.get('status')
+            license.implementation_handled_by = data.get('implementation_handled_by')
+
+            db.session.commit()
+            flash('License updated successfully!')
+            return redirect(url_for('view_details'))
+        except Exception as e:
+            db.session.rollback()
+            flash('An error occurred while updating the license.')
+            return redirect(url_for('view_details'))
+    
+    return render_template('edit_license.html', license=license)
+@app.route('/view_all_details')
+def view_all_details():
+    try:
+        licenses = License.query.all()  # Fetch all licenses
+        for license in licenses:
+            if license.expiry_date:
+                time_remaining = license.expiry_date - datetime.now().date()
+                if time_remaining.days <= 0:
+                    license.time_remaining = 'Expired'
+                elif time_remaining.days >= 60:
+                    license.time_remaining = f"{time_remaining.days} days"
+                elif time_remaining.days >= 30:
+                    license.time_remaining = f"{time_remaining.days} days"
+                else:
+                    license.time_remaining = f"{time_remaining.days} days"
+            else:
+                license.time_remaining = 'N/A'
+        return render_template('view_all_details.html', licenses=licenses)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+@app.route('/get_all_licenses')
+def get_all_licenses():
+    try:
+        licenses = License.query.all()
+        data = []
+        for license in licenses:
+            # Calculate time remaining or set it to 'N/A'
+            if license.expiry_date:
+                time_remaining = license.expiry_date - datetime.now().date()
+                if time_remaining.days <= 0:
+                    time_remaining_str = 'Expired'
+                else:
+                    time_remaining_str = f"{time_remaining.days} days"
+                expiry_date_str = license.expiry_date.strftime('%Y-%m-%d')
+            else:
+                time_remaining_str = 'N/A'
+                expiry_date_str = 'N/A'  # Ensure blank expiry dates show 'N/A'
+
+            # Append license data
+            data.append({
+                'id': license.id,
+                'site_name': license.site_name,
+                'state_details': license.state_details,
+                'license_date': license.license_date.strftime('%Y-%m-%d') if license.license_date else '',
+                'product_type': license.product_type,
+                'license_type': license.license_type,
+                'license_details': license.license_details,
+                'si_name': license.si_name,
+                'contact_person': license.contact_person,
+                'status': license.status,
+                'implementation_handled_by': license.implementation_handled_by,
+                'expiry_date': expiry_date_str,  # Use expiry_date_str
+                'time_remaining': time_remaining_str  # Use the updated time_remaining_str
+            })
+        return jsonify(data)
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+@app.route('/delete_license/<int:id>', methods=['DELETE'])
+def delete_license(id):
+    try:
+        license = License.query.get_or_404(id)
+        db.session.delete(license)
+        db.session.commit()
+        return jsonify({'message': 'License deleted successfully!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+@app.route('/update_field/<int:id>', methods=['POST'])
+def update_field(id):
+    try:
+        data = request.get_json()  # Get the JSON data from the request
+        license = License.query.get_or_404(id)
+
+        # Update fields based on the provided data
+        if 'site_name' in data:
+            license.site_name = data['site_name']
+        if 'state_details' in data:
+            license.state_details = data['state_details']
+        if 'license_date' in data:
+            license.license_date = datetime.strptime(data['license_date'], '%Y-%m-%d')
+        if 'product_type' in data:
+            license.product_type = data['product_type']
+        if 'license_type' in data:
+            license.license_type = data['license_type']
+        if 'license_details' in data:
+            license.license_details = data['license_details']
+        if 'expiry_date' in data and data['license_type'] != 'Permanent':
+            license.expiry_date = datetime.strptime(data['expiry_date'], '%Y-%m-%d')
+        else:
+            license.expiry_date = None
+        if 'si_name' in data:
+            license.si_name = data['si_name']
+        if 'contact_person' in data:
+            license.contact_person = data['contact_person']
+        if 'status' in data:
+            license.status = data['status']
+        if 'implementation_handled_by' in data:
+            license.implementation_handled_by = data['implementation_handled_by']
+
+        db.session.commit()
+        return jsonify({'success': True})
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+from flask import jsonify
+
+@app.route('/expired_licenses')
+def expired_licenses():
+    try:
+        # Fetch licenses where expiry_date is less than or equal to today's date
+        today = datetime.now().date()
+        expired_licenses = License.query.filter(License.expiry_date <= today).all()
+        
+        # Prepare licenses data for rendering in the template
+        licenses_data = []
+        for license in expired_licenses:
+            if license.expiry_date:
+                time_remaining = license.expiry_date - today
+                if time_remaining.days <= 0:
+                    time_remaining_str = 'Expired'
+                else:
+                    time_remaining_str = f"{time_remaining.days} days"
+            else:
+                time_remaining_str = 'N/A'
+
+            licenses_data.append({
+                'site_name': license.site_name,
+                'state_details': license.state_details,
+                'license_date': license.license_date.strftime('%Y-%m-%d') if license.license_date else 'N/A',
+                'product_type': license.product_type,
+                'license_type': license.license_type,
+                'license_details': license.license_details or 'N/A',
+                'expiry_date': license.expiry_date.strftime('%Y-%m-%d') if license.expiry_date else 'N/A',
+                'si_name': license.si_name or 'N/A',
+                'contact_person': license.contact_person or 'N/A',
+                'status': license.status or 'N/A',
+                'implementation_handled_by': license.implementation_handled_by or 'N/A',
+                'time_remaining': time_remaining_str
+            })
+
+        # Render the HTML template with the expired licenses data
+        return render_template('expired_licenses.html', licenses=licenses_data)
+    except Exception as e:
+        return render_template('expired_licenses.html', error=str(e))
+@app.route('/api/expired_licenses')
+def api_expired_licenses():
+    try:
+        today = datetime.now().date()
+        expired_licenses = License.query.filter(License.expiry_date <= today).all()
+        
+        licenses_data = []
+        for license in expired_licenses:
+            if license.expiry_date:
+                time_remaining = license.expiry_date - today
+                if time_remaining.days <= 0:
+                    time_remaining_str = 'Expired'
+                else:
+                    time_remaining_str = f"{time_remaining.days} days"
+            else:
+                time_remaining_str = 'N/A'
+    
+            licenses_data.append({
+                'site_name': license.site_name,
+                'state_details': license.state_details,
+                'license_date': license.license_date.strftime('%Y-%m-%d') if license.license_date else 'N/A',
+                'product_type': license.product_type,
+                'license_type': license.license_type,
+                'license_details': license.license_details or 'N/A',
+                'expiry_date': license.expiry_date.strftime('%Y-%m-%d') if license.expiry_date else 'N/A',
+                'si_name': license.si_name or 'N/A',
+                'contact_person': license.contact_person or 'N/A',
+                'status': license.status or 'N/A',
+                'implementation_handled_by': license.implementation_handled_by or 'N/A',
+                'time_remaining': time_remaining_str
+            })
+
+        return jsonify(licenses_data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+
+@app.route('/expired_licenses_admin')
+def expired_licenses_admin():
+    try:
+        today = datetime.now().date()
+        expired_licenses = License.query.filter(License.expiry_date <= today).all()
+
+
+        # Prepare licenses data for the template
+        for license in expired_licenses:
+            if license.expiry_date:
+                time_remaining = license.expiry_date - datetime.now().date()
+                if time_remaining.days <= 0:
+                    license.time_remaining = 'Expired'
+                elif time_remaining.days >= 60:
+                    license.time_remaining = f"{time_remaining.days} days"
+                elif time_remaining.days >= 30:
+                    license.time_remaining = f"{time_remaining.days} days"
+                else:
+                    license.time_remaining = f"{time_remaining.days} days"
+            else:
+                license.time_remaining = 'N/A'
+
+
+        return render_template('expiredlicense1.html', licenses=expired_licenses)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return "An error occurred while fetching expired licenses.", 500
+
+
+@app.route('/api/expired_licenses_admin')
+def api_expired_licenses_admin():
+    try:
+        today = datetime.now().date()
+        expired_licenses = License.query.filter(License.expiry_date <= today).all()
+
+        licenses_data = []
+        for license in expired_licenses:
+            if license.expiry_date:
+                time_remaining = license.expiry_date - today
+                if time_remaining.days <= 0:
+                    time_remaining_str = 'Expired'
+                elif time_remaining.days >= 60:
+                    time_remaining_str = f"{time_remaining.days} days"
+                elif time_remaining.days >= 30:
+                    time_remaining_str = f"{time_remaining.days} days"
+                else:
+                    time_remaining_str = f"{time_remaining.days} days"
+            else:
+                time_remaining_str = 'N/A'
+
+            licenses_data.append({
+                'site_name': license.site_name,
+                'state_details': license.state_details,
+                'license_date': license.license_date.strftime('%Y-%m-%d') if license.license_date else 'N/A',
+                'product_type': license.product_type,
+                'license_type': license.license_type,
+                'license_details': license.license_details or 'N/A',
+                'expiry_date': license.expiry_date.strftime('%Y-%m-%d') if license.expiry_date else 'N/A',
+                'si_name': license.si_name or 'N/A',
+                'contact_person': license.contact_person or 'N/A',
+                'status': license.status or 'N/A',
+                'implementation_handled_by': license.implementation_handled_by or 'N/A',
+                'time_remaining': time_remaining_str
+            })
+
+        return jsonify(licenses_data)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.before_request
+def create_tables():
+    # The following line will remove this handler, making it
+    # only run on the first request
+    app.before_request_funcs[None].remove(create_tables)
+
+    db.create_all()  # Create tables if they don't exist
+    from flask_migrate import upgrade
+    upgrade()  # Apply any pending migrations
+if __name__ == '__main__':
+    # Initialize the database before starting the server
+    serve(app, host='0.0.0.0', port=7777)  # Use Waitress to serve the app
